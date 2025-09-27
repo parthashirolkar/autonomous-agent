@@ -2,7 +2,8 @@ from typing_extensions import TypedDict, Annotated, List, Literal, Dict, Any
 import asyncio
 import json
 import requests
-from datetime import datetime, timezone
+from datetime import datetime
+import pytz
 from dotenv import load_dotenv
 
 # Load environment variables
@@ -60,7 +61,7 @@ async def http_request(url: str, method: str = "GET", data: str = None) -> str:
         else:
             return f"Unsupported HTTP method: {method}"
 
-        return f"HTTP {response.status_code}: {response.text[:500]}..."
+        return f"HTTP {response.status_code}: {response.text}..."
     except Exception as e:
         return f"HTTP request failed: {str(e)}"
 
@@ -98,17 +99,32 @@ async def execute_code(code: str) -> str:
 
 @tool
 async def get_time_info(timezone_name: str = "UTC") -> str:
-    """Get current time and date information."""
+    """Get current time and date information for any timezone. Supports standard timezone names like 'America/New_York', 'Europe/London', 'Asia/Tokyo', etc."""
     try:
         console.print(f"[yellow]⏰ Getting time info for: {timezone_name}[/yellow]")
 
+        # Handle common timezone formats
         if timezone_name.upper() == "UTC":
-            current_time = datetime.now(timezone.utc)
+            tz = pytz.UTC
         else:
-            # For simplicity, just return UTC time
-            current_time = datetime.now(timezone.utc)
+            try:
+                tz = pytz.timezone(timezone_name)
+            except pytz.exceptions.UnknownTimeZoneError:
+                # Try some common formats
+                common_mappings = {
+                    "EST": "America/New_York",
+                    "PST": "America/Los_Angeles",
+                    "GMT": "GMT",
+                    "CET": "Europe/Paris",
+                    "JST": "Asia/Tokyo",
+                }
+                if timezone_name.upper() in common_mappings:
+                    tz = pytz.timezone(common_mappings[timezone_name.upper()])
+                else:
+                    return f"Unknown timezone: {timezone_name}. Try formats like 'America/New_York', 'Europe/London', 'Asia/Tokyo', or 'UTC'"
 
-        return f"Current time ({timezone_name}): {current_time.strftime('%Y-%m-%d %H:%M:%S %Z')}"
+        current_time = datetime.now(tz)
+        return f"Current time ({timezone_name}): {current_time.strftime('%Y-%m-%d %H:%M:%S %Z (%z)')}"
     except Exception as e:
         return f"Time info failed: {str(e)}"
 
@@ -506,7 +522,7 @@ async def main():
         )
     )
 
-    query = """Tell me a random fact about cats from the cat fact API: https://cat-fact.herokuapp.com/facts"""
+    query = """Im in india, whats the time right now? Use a tool to answer."""
     console.print(f"[bold]Query:[/bold] {query}")
     console.print()
 
