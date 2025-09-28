@@ -1,28 +1,30 @@
-# Autonomous Multi-Agent System
+# E-Commerce Data Analysis Agent
 
-An intelligent autonomous agent system built with LangGraph that can analyze task complexity, create todo lists, and autonomously call tools to complete user queries.
+A specialized data analysis helper agent system built with LangGraph for e-commerce profitability analysis. Features a main data analysis coordinator and an SQL expert subagent that work together to process complex data queries and provide business insights.
 
 ## Features
 
-- **Intelligent Task Classification** - Automatically determines if queries are simple or complex
-- **Autonomous Tool Calling** - Agent decides which tools to use and when
-- **Real Web Search** - Powered by Tavily for current information
-- **Async Architecture** - Full asynchronous execution for performance
-- **Dynamic Todo Creation** - Breaks complex tasks into manageable steps
+- **SQL Expert Agent** - Specialized subagent for complex database queries across 7 e-commerce tables
+- **Data Analysis Coordinator** - Main agent for calculations, visualizations, and business insights
+- **Multi-table Database** - 128k+ transaction records across Amazon sales, inventory, pricing, and B2B data
+- **Dynamic Schema Awareness** - Automatically adapts to database changes without manual updates
+- **Business Intelligence** - Profitability analysis, trend identification, and actionable recommendations
+- **Real Web Search** - Market research and external data integration via Tavily API
+- **Enhanced Visualizations** - Matplotlib/seaborn integration for charts and data insights
 
 ## Available Tools
 
-- **Web Search** - Real-time internet search via Tavily API
-- **HTTP Requests** - GET/POST requests to external APIs
-- **Code Execution** - Safe Python code execution with restricted environment
-- **Time/Date** - Current time and timezone information
+- **SQL Query Tool** - Safe database queries with injection protection across e-commerce tables
+- **Python Code Execution** - Full pandas/numpy/matplotlib environment for data analysis and visualization
+- **Web Search** - Real-time market research and external data via Tavily API
 
 ## Quick Start
 
 ### Prerequisites
 - Python 3.12+
-- Ollama installed with models: `qwen2.5:latest` and `gemma3:1b`
+- Ollama installed with models: `qwen2.5:latest` and `llama3.2:1b`
 - Tavily API key (get from [tavily.com](https://tavily.com))
+- E-commerce dataset from Kaggle: [Unlock Profits with E-Commerce Sales Data](https://www.kaggle.com/datasets/thedevastator/unlock-profits-with-e-commerce-sales-data)
 
 ### Installation
 
@@ -39,59 +41,70 @@ pip install -r requirements.txt
 uv pip install -r requirements.txt
 ```
 
-3. Set up environment variables
+3. Download and setup database
+```bash
+# Download the Kaggle dataset and extract CSV files to csv-data/ folder
+# https://www.kaggle.com/datasets/thedevastator/unlock-profits-with-e-commerce-sales-data
+
+# Initialize SQLite database from CSV files
+python setup_database.py
+```
+
+4. Set up environment variables
 ```bash
 # Create .env file
 echo "TAVILY_API_KEY=your_api_key_here" > .env
 ```
 
-4. Run the system
+5. Run the system
 ```bash
 python agents.py
 ```
 
 ## How It Works
 
-The system uses an intelligent routing architecture:
+The system uses a data-focused routing architecture:
 
 ![Agent Graph](images/agent_graph.png)
 
 **Flow Overview:**
-- **task_classifier** analyzes query complexity
-- **Simple queries** go directly to tool_calling_agent
-- **Complex queries** route through planning first
-- **tool_calling_agent** autonomously decides which tools to call
-- **tools** node executes the selected tools
-- **continue** processes tool results and checks progress
-- **summarizer** creates final output for complex workflows
+- **Data Task Classifier** - Analyzes queries for SQL needs, web search requirements, and complexity
+- **Planning Agent** - Creates data analysis task breakdowns with agent assignments
+- **SQL Expert Agent** - Specialized for database queries with e-commerce domain knowledge
+- **Main Data Agent** - Handles calculations, visualizations, and web research
+- **Agent Router** - Routes between SQL expert and main agent based on task requirements
+- **Data Summarizer** - Creates business-focused analysis summaries with actionable insights
 
 ### Example Queries
 
-**Simple Query:**
+**Simple Data Query:**
 ```
-"What's the current time in UTC?"
+"Show me the top 10 selling products by revenue"
 ```
-Routes directly to tool agent -> Calls `get_time_info` -> Returns result
+Routes to SQL Expert -> Executes database query -> Returns formatted results
 
-**Complex Query:**
+**Complex Analysis:**
 ```
-"Research Python async patterns, write example code, and calculate execution time"
+"Analyze profitability across all marketplaces, identify trends, and recommend optimization strategies"
 ```
-Routes to planning -> Creates todo list -> Executes with multiple tools -> Summarizes results
+Routes through planning -> SQL Expert (data retrieval) -> Main Agent (analysis/visualization) -> Summarizer (business insights)
 
 ## Architecture
 
-- **agents.py** - Complete system implementation
-- **AgentState** - Shared state across all agents
-- **LangGraph** - Orchestrates agent workflow and tool calling
-- **Ollama Models** - Local LLM execution (GPU recommended)
-- **Rich Console** - Colored output and progress indicators
+- **agents.py** - Complete data analysis system with SQL expert and main data agents
+- **tools.py** - Modular tool implementations (SQL queries, Python execution, web search)
+- **database.py** - Database utilities and dynamic schema extraction
+- **setup_database.py** - Database initialization from CSV files
+- **AgentState** - Enhanced state with SQL results and data analysis workflow
+- **LangGraph** - Orchestrates dual-agent workflow and intelligent routing
+- **SQLite Database** - 7 tables with 128k+ e-commerce transaction records
+- **Rich Console** - Enhanced transparency with syntax highlighting and execution details
 
 ## Configuration
 
 ### Model Requirements
-- `qwen2.5:latest` - Main agent (requires ~8GB GPU memory)
-- `gemma3:1b` - Supporting agent (lightweight)
+- `qwen2.5:latest` - SQL Expert and Main Data agents (10k/8k context)
+- `llama3.2:1b` - Data Summarizer agent (lightweight, efficient)
 
 ### Environment Variables
 ```bash
@@ -106,11 +119,16 @@ ruff check .    # Linting
 ruff format .   # Formatting
 ```
 
-### Extending Tools
+### Extending the System
+Add new data sources by:
+1. Adding CSV files to `csv-data/` folder
+2. Running `python setup_database.py` to regenerate database
+3. Database schemas auto-update with dynamic injection
+
 Add new tools by:
-1. Defining with `@tool` decorator
-2. Adding to `tools` list
-3. System automatically integrates via ToolNode
+1. Defining in `tools.py` with `@tool` decorator
+2. Binding to appropriate agent (SQL expert or main agent)
+3. System automatically integrates via enhanced ToolNode
 
 ## License
 

@@ -9,8 +9,11 @@ dependencies = [
     "langchain-ollama>=0.3.8",
     "langchain-tavily>=0.2.11",
     "langgraph>=0.6.7",
+    "matplotlib>=3.10.6",
+    "pandas>=2.3.2",
     "python-dotenv>=1.1.1",
     "pytz>=2025.2",
     "rich>=14.1.0",
     "ruff>=0.13.1",
+    "seaborn>=0.13.2",
 ]

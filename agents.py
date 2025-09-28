@@ -1,137 +1,39 @@
+#!/usr/bin/env python3
+"""
+Data Analysis Helper Agent System
+Specialized for e-commerce profitability analysis with SQL expert subagent
+"""
+
 from typing_extensions import TypedDict, Annotated, List, Literal, Dict, Any
 import asyncio
-import json
-import requests
-from datetime import datetime
-import pytz
 from dotenv import load_dotenv
 
-# Load environment variables
 from langchain_ollama import ChatOllama
 from langgraph.graph import START, StateGraph, END
 from langgraph.prebuilt import ToolNode
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_core.output_parsers import JsonOutputParser
 from langchain_core.callbacks import BaseCallbackHandler
-from langchain_core.tools import tool
 from langgraph.graph.message import add_messages
-from langchain_tavily import TavilySearch
 from rich.console import Console
 from rich.panel import Panel
 from rich.tree import Tree
 from rich.markdown import Markdown
 
+# Import tools and database utilities
+from tools import web_search, execute_code, sql_query
+from database import get_database_schema
+
 load_dotenv()
 console = Console()
 
+# Main agent tools (only web search and python execution)
+main_tools = [web_search, execute_code]
+main_tool_node = ToolNode(main_tools)
 
-# Tool Definitions
-# Create Tavily search tool
-tavily_search = TavilySearch(
-    max_results=5,
-    search_depth="advanced",
-    include_answer=True,
-    include_raw_content=False,
-    include_images=False,
-)
-
-
-@tool
-async def web_search(query: str) -> str:
-    """Search the internet for current information using Tavily search API."""
-    try:
-        console.print(f"[yellow]🔍 Searching web for: {query}[/yellow]")
-        result = await tavily_search.ainvoke({"query": query})
-        return f"Web search results for '{query}':\n{result}"
-    except Exception as e:
-        return f"Web search failed: {str(e)}"
-
-
-@tool
-async def http_request(url: str, method: str = "GET", data: str = None) -> str:
-    """Make HTTP requests to external APIs."""
-    try:
-        console.print(f"[yellow]🌐 Making {method} request to: {url}[/yellow]")
-
-        if method.upper() == "GET":
-            response = requests.get(url, timeout=10)
-        elif method.upper() == "POST":
-            payload = json.loads(data) if data else {}
-            response = requests.post(url, json=payload, timeout=10)
-        else:
-            return f"Unsupported HTTP method: {method}"
-
-        return f"HTTP {response.status_code}: {response.text}..."
-    except Exception as e:
-        return f"HTTP request failed: {str(e)}"
-
-
-@tool
-async def execute_code(code: str) -> str:
-    """Execute Python code snippets safely."""
-    try:
-        console.print("[yellow]🐍 Executing Python code[/yellow]")
-
-        # Create a safe execution environment
-        namespace = {"__builtins__": {}}
-
-        # Add safe built-ins
-        for item in [
-            "len",
-            "str",
-            "int",
-            "float",
-            "list",
-            "dict",
-            "range",
-            "sum",
-            "min",
-            "max",
-        ]:
-            namespace[item] = getattr(__builtins__, item)
-
-        # Execute code
-        exec(f"result = {code}", namespace)
-        return str(namespace.get("result", "Code executed successfully"))
-    except Exception as e:
-        return f"Code execution failed: {str(e)}"
-
-
-@tool
-async def get_time_info(timezone_name: str = "UTC") -> str:
-    """Get current time and date information for any timezone. Supports standard timezone names like 'America/New_York', 'Europe/London', 'Asia/Tokyo', etc."""
-    try:
-        console.print(f"[yellow]⏰ Getting time info for: {timezone_name}[/yellow]")
-
-        # Handle common timezone formats
-        if timezone_name.upper() == "UTC":
-            tz = pytz.UTC
-        else:
-            try:
-                tz = pytz.timezone(timezone_name)
-            except pytz.exceptions.UnknownTimeZoneError:
-                # Try some common formats
-                common_mappings = {
-                    "EST": "America/New_York",
-                    "PST": "America/Los_Angeles",
-                    "GMT": "GMT",
-                    "CET": "Europe/Paris",
-                    "JST": "Asia/Tokyo",
-                }
-                if timezone_name.upper() in common_mappings:
-                    tz = pytz.timezone(common_mappings[timezone_name.upper()])
-                else:
-                    return f"Unknown timezone: {timezone_name}. Try formats like 'America/New_York', 'Europe/London', 'Asia/Tokyo', or 'UTC'"
-
-        current_time = datetime.now(tz)
-        return f"Current time ({timezone_name}): {current_time.strftime('%Y-%m-%d %H:%M:%S %Z (%z)')}"
-    except Exception as e:
-        return f"Time info failed: {str(e)}"
-
-
-# Create tool list
-tools = [web_search, http_request, execute_code, get_time_info]
-tool_node = ToolNode(tools)
+# SQL expert tools (only SQL query)
+sql_tools = [sql_query]
+sql_tool_node = ToolNode(sql_tools)
 
 
 class StreamingCallback(BaseCallbackHandler):
@@ -145,12 +47,15 @@ class StreamingCallback(BaseCallbackHandler):
         console.print(f"[dim cyan]{token}[/dim cyan]", end="")
 
 
-todo_agent = ChatOllama(model="gemma3:1b", temperature=0.1, num_ctx=2000)
-
-# Main agent that can handle both tool calling and JSON output
+# Agent models
+todo_agent = ChatOllama(model="llama3.2:1b", temperature=0.1, num_ctx=2000)
 main_llm = ChatOllama(model="qwen2.5:latest", temperature=0.4, num_ctx=10000)
-main_agent_with_tools = main_llm.bind_tools(tools)
+sql_llm = ChatOllama(model="qwen2.5:latest", temperature=0.2, num_ctx=8000)
+
+# Bind tools to agents
+main_agent_with_tools = main_llm.bind_tools(main_tools)
 main_agent = main_llm | JsonOutputParser()
+sql_agent_with_tools = sql_llm.bind_tools(sql_tools)
 
 
 class AgentState(TypedDict):
@@ -164,34 +69,39 @@ class AgentState(TypedDict):
     complexity_level: str
     required_tools: List[str]
     tool_call_history: List[Dict[str, Any]]
+    sql_results: List[Dict[str, Any]]
+    data_analysis_results: List[str]
+    needs_sql_expert: bool
 
 
 async def task_classifier(state: AgentState) -> AgentState:
-    """Analyzes query complexity and determines if tools are needed."""
+    """Analyzes data analysis query complexity and determines if SQL database access is needed."""
     console.print(
         Panel.fit(
-            "[bold cyan]🎯 Task Classifier[/bold cyan]\n[dim]Analyzing query complexity and tool requirements...[/dim]",
+            "[bold cyan]🎯 Data Analysis Task Classifier[/bold cyan]\n[dim]Analyzing query for data analysis requirements...[/dim]",
             border_style="cyan",
         )
     )
 
     system_prompt = SystemMessage(
         content=(
-            "You are a task analysis assistant that determines query complexity and required tools. "
+            "You are a data analysis task classifier for an e-commerce profitability analysis system. "
             "Analyze the user query and return ONLY a JSON response with this format: "
-            '{"complexity_level": "simple|moderate|complex", "requires_tools": true|false, "suggested_tools": ["tool1", "tool2"], "reasoning": "brief explanation"} '
-            "\n\nAvailable tools: web_search, http_request, execute_code, get_time_info "
+            '{"complexity_level": "simple|moderate|complex", "needs_sql_expert": true|false, "requires_web_search": true|false, "analysis_type": "category", "reasoning": "brief explanation"} '
+            "\n\nAvailable data: E-commerce sales (Amazon, B2B), inventory, pricing across platforms, P&L data "
+            "\n\nSQL Expert needed for: Database queries, sales analysis, inventory checks, profitability calculations "
+            "\n\nWeb search needed for: Market trends, competitor analysis, external data "
             "\n\nComplexity levels: "
-            "- simple: Single action, direct answer possible "
-            "- moderate: 2-3 steps, some tool usage "
-            "- complex: Multi-step workflow, planning needed"
+            "- simple: Single data query or calculation "
+            "- moderate: Multi-table analysis, basic insights "
+            "- complex: Advanced analytics, forecasting, comprehensive reports"
         )
     )
 
     human_message = HumanMessage(content=f"Query: {state['original_query']}")
 
-    callback = StreamingCallback("Task Classifier", "Analyzing complexity")
-    console.print("[cyan]Task Classifier:[/cyan] ", end="")
+    callback = StreamingCallback("Task Classifier", "Analyzing data requirements")
+    console.print("[cyan]Data Task Classifier:[/cyan] ", end="")
 
     response = await main_agent.ainvoke(
         [system_prompt, human_message], config={"callbacks": [callback]}
@@ -200,16 +110,23 @@ async def task_classifier(state: AgentState) -> AgentState:
 
     if isinstance(response, dict):
         state["complexity_level"] = response.get("complexity_level", "moderate")
-        state["required_tools"] = response.get("suggested_tools", [])
+        state["needs_sql_expert"] = response.get("needs_sql_expert", True)
+        state["required_tools"] = []
+        if response.get("requires_web_search", False):
+            state["required_tools"].append("web_search")
+
         console.print(
-            f"[cyan]📊 Complexity: {state['complexity_level']} | Tools: {state['required_tools']}[/cyan]"
+            f"[cyan]📊 Complexity: {state['complexity_level']} | SQL Expert: {state['needs_sql_expert']} | Web Search: {response.get('requires_web_search', False)}[/cyan]"
         )
     else:
         state["complexity_level"] = "moderate"
+        state["needs_sql_expert"] = True
         state["required_tools"] = []
 
     state["tool_results"] = []
     state["tool_call_history"] = []
+    state["sql_results"] = []
+    state["data_analysis_results"] = []
     console.print()
 
     return state
@@ -218,27 +135,30 @@ async def task_classifier(state: AgentState) -> AgentState:
 async def planning_agent(state: AgentState) -> AgentState:
     console.print(
         Panel.fit(
-            "[bold blue]🧠 Planning Agent[/bold blue]\n[dim]Breaking down the query into actionable tasks...[/dim]",
+            "[bold blue]🧠 Data Analysis Planning Agent[/bold blue]\n[dim]Breaking down the data analysis query into actionable tasks...[/dim]",
             border_style="blue",
         )
     )
 
     system_prompt = SystemMessage(
         content=(
-            "You are a planning assistant that breaks down complex queries into specific, actionable tasks. "
-            "Analyze the user's query and create a structured list of tasks, incorporating tool usage when needed. "
-            f"Available tools: {', '.join([tool.name for tool in tools])} "
-            f"Required tools for this query: {state.get('required_tools', [])} "
+            "You are a data analysis planning assistant for e-commerce profitability analysis. "
+            "Break down complex data queries into specific, actionable tasks. "
+            f"SQL Expert available: {state.get('needs_sql_expert', False)} "
+            f"Web search needed: {'web_search' in state.get('required_tools', [])} "
             "Return ONLY a JSON response with this format: "
-            '{"tasks": [{"task": "specific task description", "status": "pending", "tools_needed": ["tool1", "tool2"]}, ...]} '
-            "Each task should be atomic and specific. Include tools_needed array for tasks requiring tool usage."
+            '{"tasks": [{"task": "specific task description", "status": "pending", "agent_needed": "main|sql_expert", "tools_needed": ["tool1"]}, ...]} '
+            "\n\nFor data analysis tasks: "
+            "- Use 'sql_expert' agent for database queries, sales analysis, inventory checks "
+            "- Use 'main' agent for calculations, visualizations, web search, data processing "
+            "Each task should be atomic and specify which agent should handle it."
         )
     )
 
     human_message = HumanMessage(content=f"Query: {state['original_query']}")
 
-    callback = StreamingCallback("Planning Agent", "Creating task breakdown")
-    console.print("[blue]Planning Agent:[/blue] ", end="")
+    callback = StreamingCallback("Planning Agent", "Creating data analysis breakdown")
+    console.print("[blue]Data Planning Agent:[/blue] ", end="")
 
     response = await main_agent.ainvoke(
         [system_prompt, human_message], config={"callbacks": [callback]}
@@ -247,17 +167,24 @@ async def planning_agent(state: AgentState) -> AgentState:
 
     if isinstance(response, dict) and "tasks" in response:
         state["todo_list"] = response["tasks"]
-        console.print(f"[green]✅ Created {len(response['tasks'])} tasks[/green]")
+        console.print(
+            f"[green]✅ Created {len(response['tasks'])} data analysis tasks[/green]"
+        )
 
-        tree = Tree("📋 Task Breakdown")
+        tree = Tree("📋 Data Analysis Task Breakdown")
         for i, task in enumerate(response["tasks"], 1):
-            tree.add(f"[dim]{i}.[/dim] {task['task']}")
+            agent_icon = "🗃️" if task.get("agent_needed") == "sql_expert" else "🐍"
+            tree.add(f"[dim]{i}.[/dim] {agent_icon} {task['task']}")
         console.print(tree)
     else:
         state["todo_list"] = [
-            {"task": "Address the original query", "status": "pending"}
+            {
+                "task": "Analyze the data query",
+                "status": "pending",
+                "agent_needed": "main",
+            }
         ]
-        console.print("[yellow]⚠️ Fallback: Created single task[/yellow]")
+        console.print("[yellow]⚠️ Fallback: Created single analysis task[/yellow]")
 
     state["current_task_index"] = 0
     state["research_results"] = []
@@ -266,8 +193,58 @@ async def planning_agent(state: AgentState) -> AgentState:
     return state
 
 
-async def tool_calling_agent(state: AgentState) -> AgentState:
-    """Agent that can call tools and decide next steps."""
+async def sql_expert_agent(state: AgentState) -> AgentState:
+    """SQL Expert agent specialized for database queries and e-commerce analysis."""
+    current_task = state["todo_list"][state["current_task_index"]]
+    task_num = state["current_task_index"] + 1
+    total_tasks = len(state["todo_list"])
+
+    console.print(
+        Panel.fit(
+            f"[bold yellow]🗃️ SQL Expert Agent[/bold yellow] [{task_num}/{total_tasks}]\n[dim]Working on: {current_task['task']}[/dim]",
+            border_style="yellow",
+        )
+    )
+
+    # Get dynamic database schema
+    db_schema = get_database_schema()
+
+    system_prompt = SystemMessage(
+        content=(
+            "You are an SQL Expert specializing in e-commerce profitability analysis. "
+            "You have access to a comprehensive e-commerce database. "
+            f"\n\n{db_schema}\n\n"
+            "Use the sql_query tool to execute SELECT queries for data analysis. "
+            "Focus on profitability, sales trends, inventory analysis, and marketplace performance. "
+            "Always reference the exact column names and data types shown in the schema above. "
+            "Provide business insights along with your query results."
+        )
+    )
+
+    human_message = HumanMessage(content=f"Task: {current_task['task']}")
+
+    # Build message history for context
+    messages = [system_prompt] + state["messages"] + [human_message]
+
+    callback = StreamingCallback("SQL Expert", current_task["task"])
+    console.print(
+        f"[yellow]SQL Expert Agent ({task_num}/{total_tasks}):[/yellow] ", end=""
+    )
+
+    # SQL Expert will decide to call SQL queries
+    response = await sql_agent_with_tools.ainvoke(
+        messages, config={"callbacks": [callback]}
+    )
+    console.print()
+
+    # Add the response to state messages
+    state["messages"].append(response)
+
+    return state
+
+
+async def main_data_agent(state: AgentState) -> AgentState:
+    """Main data analysis agent that handles calculations, visualizations, and web search."""
     current_task = (
         state["todo_list"][state["current_task_index"]]
         if state["todo_list"]
@@ -278,18 +255,21 @@ async def tool_calling_agent(state: AgentState) -> AgentState:
 
     console.print(
         Panel.fit(
-            f"[bold green]Tool-Calling Agent[/bold green] [{task_num}/{total_tasks}]\n[dim]Working on: {current_task['task']}[/dim]",
+            f"[bold green]🐍 Main Data Analysis Agent[/bold green] [{task_num}/{total_tasks}]\n[dim]Working on: {current_task['task']}[/dim]",
             border_style="green",
         )
     )
 
     system_prompt = SystemMessage(
         content=(
-            "You are an autonomous research assistant with access to tools. "
-            "Complete the given task using any tools you need. "
-            "Available tools: web_search, http_request, execute_code, get_time_info. "
-            "Call tools when needed to get accurate information. "
-            "After calling tools, provide a concise final answer."
+            "You are a data analysis expert specializing in e-commerce profitability analysis. "
+            "You have access to: web_search for market data and execute_code for data processing. "
+            "For data processing tasks, you can: "
+            "- Use pandas to analyze data and create calculations "
+            "- Use matplotlib/seaborn for visualizations "
+            "- Access SQLite database via sqlite3 and DB_PATH for additional queries "
+            "- Perform statistical analysis and data transformations "
+            "Always provide insights and interpretations with your analysis."
         )
     )
 
@@ -298,9 +278,9 @@ async def tool_calling_agent(state: AgentState) -> AgentState:
     # Build message history for context
     messages = [system_prompt] + state["messages"] + [human_message]
 
-    callback = StreamingCallback("Tool Agent", current_task["task"])
+    callback = StreamingCallback("Main Data Agent", current_task["task"])
     console.print(
-        f"[green]Tool-Calling Agent ({task_num}/{total_tasks}):[/green] ", end=""
+        f"[green]Main Data Agent ({task_num}/{total_tasks}):[/green] ", end=""
     )
 
     # Agent will decide to call tools or respond directly
@@ -315,11 +295,19 @@ async def tool_calling_agent(state: AgentState) -> AgentState:
     return state
 
 
-def should_continue(state: AgentState) -> Literal["tools", "continue"]:
-    """Determine if we should call tools or continue."""
+def should_continue_main(state: AgentState) -> Literal["main_tools", "continue"]:
+    """Determine if main agent should call tools or continue."""
     last_message = state["messages"][-1]
     if hasattr(last_message, "tool_calls") and last_message.tool_calls:
-        return "tools"
+        return "main_tools"
+    return "continue"
+
+
+def should_continue_sql(state: AgentState) -> Literal["sql_tools", "continue"]:
+    """Determine if SQL agent should call tools or continue."""
+    last_message = state["messages"][-1]
+    if hasattr(last_message, "tool_calls") and last_message.tool_calls:
+        return "sql_tools"
     return "continue"
 
 
@@ -358,98 +346,68 @@ async def continue_after_tools(state: AgentState) -> AgentState:
     return state
 
 
-async def task_executor(state: AgentState) -> AgentState:
-    if state["current_task_index"] >= len(state["todo_list"]):
-        return state
-
-    current_task = state["todo_list"][state["current_task_index"]]
-    task_num = state["current_task_index"] + 1
-    total_tasks = len(state["todo_list"])
-
-    console.print(
-        Panel.fit(
-            f"[bold green]⚡ Task Executor[/bold green] [{task_num}/{total_tasks}]\n[dim]Working on: {current_task['task']}[/dim]",
-            border_style="green",
-        )
-    )
-
-    system_prompt = SystemMessage(
-        content=(
-            "You are a concise research assistant. Complete the specific task with key facts only. "
-            "CONSTRAINTS: "
-            "- Maximum 3-4 sentences per response "
-            "- Focus on essential information only "
-            "- No repetition or filler text "
-            "- Direct, factual answers "
-            "- Bullet points if listing multiple items"
-        )
-    )
-
-    human_message = HumanMessage(
-        content=(
-            f"Task: {current_task['task']}\n"
-            f"Provide ONLY the essential facts. Be concise and direct."
-        )
-    )
-
-    callback = StreamingCallback("Task Executor", current_task["task"])
-    console.print(f"[green]Task Executor ({task_num}/{total_tasks}):[/green] ", end="")
-
-    response = await todo_agent.ainvoke(
-        [system_prompt, human_message], config={"callbacks": [callback]}
-    )
-    console.print()
-
-    state["research_results"].append(
-        f"Task: {current_task['task']}\nResult: {response.content}"
-    )
-    state["todo_list"][state["current_task_index"]]["status"] = "completed"
-    state["current_task_index"] += 1
-
-    console.print(f"[green]✅ Task {task_num} completed[/green]")
-    console.print()
-
-    return state
-
-
-def complexity_router(state: AgentState) -> Literal["tool_calling_agent", "planning"]:
+def complexity_router(state: AgentState) -> Literal["main_data_agent", "planning"]:
     """Route based on task complexity."""
     complexity = state.get("complexity_level", "moderate")
     if complexity == "simple":
-        return "tool_calling_agent"  # Direct tool execution
+        return "main_data_agent"  # Direct execution
     else:
         return "planning"  # Complex tasks need planning
 
 
-def progress_checker(state: AgentState) -> Literal["tool_calling_agent", "end"]:
+async def agent_router(state: AgentState) -> AgentState:
+    """Route to appropriate agent based on current task."""
+    # This is a pass-through node that just returns the state
+    # The actual routing is handled by the conditional edge
+    return state
+
+
+def determine_agent(
+    state: AgentState,
+) -> Literal["main_data_agent", "sql_expert_agent"]:
+    """Determine which agent should handle the current task."""
     if not state["todo_list"]:
-        return "end"  # Simple query, already completed
+        return "main_data_agent"
+
+    current_task = state["todo_list"][state["current_task_index"]]
+    agent_needed = current_task.get("agent_needed", "main")
+
+    if agent_needed == "sql_expert":
+        return "sql_expert_agent"
+    else:
+        return "main_data_agent"
+
+
+def progress_checker(state: AgentState) -> Literal["agent_router", "summarizer"]:
+    if not state["todo_list"]:
+        return "summarizer"  # Simple query, go to summary
     return (
-        "tool_calling_agent"
+        "agent_router"
         if state["current_task_index"] < len(state["todo_list"])
-        else "end"
+        else "summarizer"
     )
 
 
 async def summarizer_agent(state: AgentState) -> AgentState:
     console.print(
         Panel.fit(
-            "[bold purple]📝 Summarizer Agent[/bold purple]\n[dim]Compiling final comprehensive summary...[/dim]",
+            "[bold purple]📝 Data Analysis Summary[/bold purple]\n[dim]Compiling final comprehensive analysis...[/dim]",
             border_style="purple",
         )
     )
 
     system_prompt = SystemMessage(
         content=(
-            "You are a summarization assistant that creates comprehensive final summaries in markdown format. "
-            "You will be given research results from multiple completed tasks. "
-            "Create a well-structured, comprehensive summary using proper markdown formatting: "
-            "- Use # for main headings, ## for subheadings "
-            "- Use **bold** for key terms and important points "
-            "- Use bullet points (-) or numbered lists for multiple items "
-            "- Use > for important quotes or highlights "
-            "Organize the information logically and ensure all key points are covered. "
-            "Make sure your answer is coherent and stands on its own. The goal is to abstract the research process from the user and provide a clear, well-formatted final answer."
+            "You are a data analysis summarization expert for e-commerce profitability analysis. "
+            "Create a comprehensive final analysis summary in markdown format. "
+            "Focus on business insights, actionable recommendations, and data-driven conclusions. "
+            "Use proper markdown formatting with: "
+            "- # for main headings (Analysis Summary, Key Findings, Recommendations) "
+            "- ## for subheadings (Sales Trends, Profitability Analysis, etc.) "
+            "- **bold** for key metrics and important insights "
+            "- Bullet points (-) for actionable items "
+            "- Tables for key data comparisons "
+            "Make the analysis business-focused and actionable for e-commerce decision makers."
         )
     )
 
@@ -457,13 +415,13 @@ async def summarizer_agent(state: AgentState) -> AgentState:
     human_message = HumanMessage(
         content=(
             f"Original Query: {state['original_query']}\n\n"
-            f"Research Results:\n{research_summary}\n\n"
-            f"Please provide a comprehensive summary that fully addresses the original query."
+            f"Analysis Results:\n{research_summary}\n\n"
+            f"Please provide a comprehensive business analysis summary with actionable insights."
         )
     )
 
-    callback = StreamingCallback("Summarizer Agent", "Creating final summary")
-    console.print("[purple]Summarizer Agent:[/purple] ", end="")
+    callback = StreamingCallback("Data Summarizer", "Creating final analysis")
+    console.print("[purple]Data Analysis Summarizer:[/purple] ", end="")
 
     response = await todo_agent.ainvoke(
         [system_prompt, human_message], config={"callbacks": [callback]}
@@ -472,57 +430,80 @@ async def summarizer_agent(state: AgentState) -> AgentState:
 
     state["final_summary"] = response.content
 
-    console.print("[purple]✅ Final summary completed[/purple]")
+    console.print("[purple]✅ Final analysis completed[/purple]")
     console.print()
 
     return state
 
 
+# Create the data analysis state graph
 agent = StateGraph(AgentState)
 
 # Add nodes
 agent.add_node("task_classifier", task_classifier)
 agent.add_node("planning", planning_agent)
-agent.add_node("tool_calling_agent", tool_calling_agent)
-agent.add_node("tools", tool_node)
+agent.add_node("agent_router", agent_router)
+agent.add_node("main_data_agent", main_data_agent)
+agent.add_node("sql_expert_agent", sql_expert_agent)
+agent.add_node("main_tools", main_tool_node)
+agent.add_node("sql_tools", sql_tool_node)
 agent.add_node("continue", continue_after_tools)
 agent.add_node("summarizer", summarizer_agent)
 
 # Add edges
 agent.add_edge(START, "task_classifier")
+
+# Complexity routing
 agent.add_conditional_edges(
     "task_classifier",
     complexity_router,
-    {"tool_calling_agent": "tool_calling_agent", "planning": "planning"},
+    {"main_data_agent": "main_data_agent", "planning": "planning"},
 )
-agent.add_edge("planning", "tool_calling_agent")
 
-# Tool calling flow
+agent.add_edge("planning", "agent_router")
+
+# Agent routing for task execution
 agent.add_conditional_edges(
-    "tool_calling_agent",
-    should_continue,
-    {"tools": "tools", "continue": "continue"},
+    "agent_router",
+    determine_agent,
+    {"main_data_agent": "main_data_agent", "sql_expert_agent": "sql_expert_agent"},
 )
-agent.add_edge("tools", "continue")
 
-# After tool execution, check progress
+# Main agent tool flow
+agent.add_conditional_edges(
+    "main_data_agent",
+    should_continue_main,
+    {"main_tools": "main_tools", "continue": "continue"},
+)
+agent.add_edge("main_tools", "continue")
+
+# SQL agent tool flow
+agent.add_conditional_edges(
+    "sql_expert_agent",
+    should_continue_sql,
+    {"sql_tools": "sql_tools", "continue": "continue"},
+)
+agent.add_edge("sql_tools", "continue")
+
+# Progress checking
 agent.add_conditional_edges(
     "continue",
     progress_checker,
-    {"tool_calling_agent": "tool_calling_agent", "end": "summarizer"},
+    {"agent_router": "agent_router", "summarizer": "summarizer"},
 )
+
 agent.add_edge("summarizer", END)
 
 
 async def main():
     console.print(
         Panel.fit(
-            "[bold magenta] Autonomous Multi-Agent System[/bold magenta]\n[dim]Breaking down complex tasks into manageable steps[/dim]",
+            "[bold magenta]🏪 E-commerce Data Analysis Helper[/bold magenta]\n[dim]Specialized multi-agent system for profitability analysis[/dim]",
             border_style="magenta",
         )
     )
 
-    query = """Im in india, whats the time right now? Use a tool to answer."""
+    query = """Give me an executive actionable summary of the Amazon Sale report table. First pull the data with an SQL query, then do some analysis on it."""
     console.print(f"[bold]Query:[/bold] {query}")
     console.print()
 
@@ -537,21 +518,24 @@ async def main():
         "complexity_level": "moderate",
         "required_tools": [],
         "tool_call_history": [],
+        "sql_results": [],
+        "data_analysis_results": [],
+        "needs_sql_expert": True,
     }
 
-    with console.status(
-        "[bold green]Initializing autonomous agent system..."
-    ) as status:
+    with console.status("[bold green]Initializing data analysis system...") as status:
         compiled_agent = agent.compile()
-        status.update("[bold blue]Starting autonomous execution...[/bold blue]")
+        status.update("[bold blue]Starting data analysis...[/bold blue]")
 
-    console.print("[bold green]🚀 Starting autonomous execution...[/bold green]")
+    console.print("[bold green]🚀 Starting e-commerce data analysis...[/bold green]")
     console.print()
 
     final_state = await compiled_agent.ainvoke(initial_state)
 
     console.print(
-        Panel.fit("[bold yellow]📋 Final Summary[/bold yellow]", border_style="yellow")
+        Panel.fit(
+            "[bold yellow]📊 Data Analysis Summary[/bold yellow]", border_style="yellow"
+        )
     )
     console.print()
 
@@ -559,7 +543,7 @@ async def main():
     console.print(markdown_content)
 
     console.print(
-        f"[bold green]✨ Autonomous execution completed! Processed {len(final_state['todo_list'])} tasks.[/bold green]"
+        f"[bold green]✨ Data analysis completed! Processed {len(final_state['todo_list'])} tasks.[/bold green]"
     )
 
 

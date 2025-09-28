@@ -4,36 +4,41 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## System Overview
 
-This is an autonomous multi-agent system built with LangGraph that can intelligently route tasks based on complexity and autonomously call tools to complete user queries. The system uses local Ollama models (qwen2.5:latest for main agent, gemma3:1b for supporting tasks) and integrates with external APIs.
+This is a specialized data analysis helper agent system built with LangGraph for e-commerce profitability analysis. The system features a main data analysis coordinator and an SQL expert subagent that work together to process complex data queries. Uses local Ollama models (qwen2.5:latest for main agents, llama3.2:1b for summarization) and integrates with e-commerce databases.
 
 ## Core Architecture
 
 ### Agent Flow Structure
-The system implements a dynamic routing architecture:
+The system implements a data-focused routing architecture:
 
 ```
-User Query → Task Classifier → [Simple: Direct Tool Agent | Complex: Planning → Tool Agent]
-                                      ↓
-Tool Agent ⟷ ToolNode (web_search, http_request, execute_code, get_time_info)
-     ↓
-Continue Processing → Progress Check → [More Tasks | Summarizer] → End
+User Query → Data Task Classifier → [Simple: Main Agent | Complex: Planning → Agent Router]
+                                                    ↓
+Agent Router → [SQL Expert: Database Queries | Main Agent: Analysis & Visualization]
+                                ↓
+Continue Processing → Progress Check → [More Tasks | Data Summarizer] → End
 ```
 
 ### Key Components
 
-**agents.py** - Single file containing the complete system:
-- **AgentState**: TypedDict defining shared state across all agents including messages, todo_list, tool_results, complexity_level
-- **Task Classifier**: Analyzes query complexity (simple/moderate/complex) and determines routing
-- **Planning Agent**: Breaks complex queries into structured todo lists with tool requirements
-- **Tool-Calling Agent**: Autonomously decides which tools to call and when, maintains conversation context
-- **ToolNode**: Executes the 4 approved tools (web search via Tavily, HTTP requests, code execution, time/date)
-- **Routing Functions**: `complexity_router()`, `should_continue()`, `progress_checker()` manage flow control
+**agents.py** - Complete data analysis system:
+- **AgentState**: Enhanced with `sql_results`, `data_analysis_results`, `needs_sql_expert` for data workflow
+- **Data Task Classifier**: Analyzes queries for SQL needs, web search requirements, and complexity
+- **Planning Agent**: Creates data analysis task breakdowns with agent assignments (sql_expert vs main)
+- **SQL Expert Agent**: Specialized for database queries with e-commerce domain knowledge
+- **Main Data Agent**: Handles calculations, visualizations, and web research
+- **Data Summarizer**: Creates business-focused analysis summaries with actionable insights
+
+### Database Integration
+- **SQLite Database**: Auto-generated from CSV files containing e-commerce transaction data
+- **7 Data Tables**: Amazon sales, inventory, pricing, B2B transactions, P&L, expenses, logistics
+- **SQL Query Tool**: Safe SELECT-only queries with injection protection and result formatting
+- **Schema Awareness**: SQL agent has complete understanding of all table structures
 
 ### Tool Integration
-- **Tavily Search**: Real web search with advanced depth, requires TAVILY_API_KEY in .env
-- **HTTP Request**: GET/POST requests to external APIs with timeout handling
-- **Code Execution**: Safe Python code execution with restricted built-ins namespace
-- **Time Info**: UTC time and timezone information
+- **SQL Query Tool**: Execute database queries with safety checks and formatted results
+- **Enhanced Code Execution**: Full pandas/numpy/matplotlib access for data analysis and visualization
+- **Tavily Search**: Web search for market trends and external data research
 
 ## Development Commands
 
@@ -59,32 +64,43 @@ ruff format .   # Formatting
 
 ## Configuration Notes
 
+### Database Setup
+```bash
+# Download e-commerce dataset from Kaggle first:
+# https://www.kaggle.com/datasets/thedevastator/unlock-profits-with-e-commerce-sales-data
+# Extract CSV files to csv-data/ folder
+
+# Initialize database from CSV files
+python setup_database.py
+```
+
 ### Model Configuration
-- Main agent uses `qwen2.5:latest` with 10k context (requires sufficient GPU memory)
-- Todo agent uses `gemma3:1b` for efficiency
-- Models are bound to tools via `main_llm.bind_tools(tools)` for autonomous tool selection
+- **Main agents**: `qwen2.5:latest` with 10k context (SQL) and 8k context (main)
+- **Summarizer**: `llama3.2:1b` for efficiency in final analysis generation
+- **Tool binding**: Agents bound to specific tools (`main_agent_with_tools`, `sql_agent_with_tools`)
 
-
-### State Management
-- **Asynchronous throughout**: All agents and tools use async/await patterns
-- **Message-based context**: Tool results integrate into conversation history via state["messages"]
-- **Progress tracking**: Todo lists track task completion with status updates
+### Data Analysis Features
+- **Multi-table queries**: Complex joins across sales, inventory, and pricing data
+- **Profitability analysis**: Cross-marketplace revenue and cost analysis
+- **Visualization support**: Matplotlib/seaborn integration for charts and insights
+- **Business intelligence**: Actionable recommendations and trend analysis
 
 ## Extending the System
 
-### Adding New Tools
-1. Define tool with `@tool` decorator
-2. Add to `tools` list
-3. ToolNode automatically integrates new tools
-4. Update tool descriptions in agent prompts
+### Adding New Data Sources
+1. Add CSV files to `csv-data/` folder
+2. Run `setup_database.py` to regenerate database
+3. Update SQL expert agent system prompt with new table descriptions
+4. Database schemas auto-generated in `database_schemas.sql`
 
-### Modifying Agent Behavior
-- **Task complexity logic**: Modify `complexity_router()` routing conditions
-- **Tool calling prompts**: Update system prompts in `tool_calling_agent()`
-- **Planning behavior**: Adjust `planning_agent()` task breakdown logic
+### Modifying Analysis Behavior
+- **Data complexity logic**: Modify `complexity_router()` for different analysis types
+- **SQL expert prompts**: Update domain knowledge in `sql_expert_agent()`
+- **Analysis focus**: Adjust `summarizer_agent()` for different business metrics
 
 ### Architecture Patterns
-- All routing uses conditional edges with explicit return type hints
-- Tools maintain consistent error handling with try/catch blocks
-- Rich console provides colored output with panels and progress indicators
-- State mutations happen in-place and return modified state objects
+- **Dual agent system**: SQL expert for data retrieval, main agent for processing
+- **Safety-first**: SQL injection protection, read-only database access
+- **Business-focused**: All outputs oriented toward actionable business insights
+- **Scalable**: Easy to add new data sources and analysis types
+- Use `uv` to run any/all python files and scripts.
