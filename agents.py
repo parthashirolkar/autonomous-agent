@@ -48,9 +48,9 @@ class StreamingCallback(BaseCallbackHandler):
 
 
 # Agent models
-todo_agent = ChatOllama(model="llama3.2:1b", temperature=0.1, num_ctx=2000)
-main_llm = ChatOllama(model="qwen2.5:latest", temperature=0.4, num_ctx=10000)
-sql_llm = ChatOllama(model="qwen2.5:latest", temperature=0.2, num_ctx=8000)
+todo_agent = ChatOllama(model="qwen2.5:latest", temperature=0.1, num_ctx=2000)
+main_llm = ChatOllama(model="gpt-oss:20b-cloud", temperature=0.2)
+sql_llm = ChatOllama(model="gpt-oss:20b-cloud", temperature=0.1)
 
 # Bind tools to agents
 main_agent_with_tools = main_llm.bind_tools(main_tools)
@@ -312,13 +312,13 @@ def should_continue_sql(state: AgentState) -> Literal["sql_tools", "continue"]:
 
 
 async def continue_after_tools(state: AgentState) -> AgentState:
-    """Continue processing after tools have been called."""
+    """Mark task as complete and advance to next task."""
+    last_message = state["messages"][-1]
+
     if state["todo_list"]:
         # Working through a todo list
         current_task = state["todo_list"][state["current_task_index"]]
 
-        # Extract final answer from the conversation
-        last_message = state["messages"][-1]
         result_content = (
             last_message.content
             if hasattr(last_message, "content")
@@ -334,7 +334,6 @@ async def continue_after_tools(state: AgentState) -> AgentState:
         console.print(f"[green]✅ Task {state['current_task_index']} completed[/green]")
     else:
         # Simple query completed
-        last_message = state["messages"][-1]
         state["final_summary"] = (
             last_message.content
             if hasattr(last_message, "content")
@@ -475,7 +474,7 @@ agent.add_conditional_edges(
     should_continue_main,
     {"main_tools": "main_tools", "continue": "continue"},
 )
-agent.add_edge("main_tools", "continue")
+agent.add_edge("main_tools", "main_data_agent")  # Route back to agent to process tool results
 
 # SQL agent tool flow
 agent.add_conditional_edges(
@@ -483,7 +482,7 @@ agent.add_conditional_edges(
     should_continue_sql,
     {"sql_tools": "sql_tools", "continue": "continue"},
 )
-agent.add_edge("sql_tools", "continue")
+agent.add_edge("sql_tools", "sql_expert_agent")  # Route back to agent to process tool results
 
 # Progress checking
 agent.add_conditional_edges(
@@ -503,7 +502,7 @@ async def main():
         )
     )
 
-    query = """Give me an executive actionable summary of the Amazon Sale report table. First pull the data with an SQL query, then do some analysis on it."""
+    query = """Show me the top 10 selling products by revenue."""
     console.print(f"[bold]Query:[/bold] {query}")
     console.print()
 
@@ -530,7 +529,7 @@ async def main():
     console.print("[bold green]🚀 Starting e-commerce data analysis...[/bold green]")
     console.print()
 
-    final_state = await compiled_agent.ainvoke(initial_state)
+    final_state = await compiled_agent.ainvoke(initial_state, {"recursion_limit": 100})
 
     console.print(
         Panel.fit(
