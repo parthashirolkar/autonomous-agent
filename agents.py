@@ -5,6 +5,7 @@ Migrated from LangGraph StateGraph to deepagents framework
 """
 
 import asyncio
+import os
 from dotenv import load_dotenv
 
 from deepagents import create_deep_agent
@@ -24,9 +25,22 @@ console = Console()
 coordinator_model = ChatOllama(model="gpt-oss:20b-cloud", temperature=0.2)
 
 
-def get_coordinator_system_prompt() -> str:
+def get_coordinator_system_prompt(enable_a2a: bool = False) -> str:
     """Build the coordinator system prompt with database schema."""
     db_schema = get_database_schema()
+
+    a2a_section = ""
+    if enable_a2a:
+        a2a_section = """
+## A2A Protocol Communication
+You also have access to the `a2a_call` tool which lets you communicate with
+remote A2A-compatible agents. Use this when:
+- A task is better handled by an external specialized agent
+- You need to query or collaborate with another agent system
+- Cross-organizational agent cooperation is required
+
+Provide the remote agent's URL and a clear message describing the task.
+"""
 
     return f"""You are an expert e-commerce data analysis coordinator specializing in profitability analysis.
 
@@ -83,6 +97,7 @@ You coordinate complex data analysis tasks by:
 - The database contains real e-commerce transaction data (128k+ rows in amazon_sale_report)
 - Always use LIMIT clauses for large queries
 - Focus on profitability insights and actionable recommendations
+{a2a_section}
 """
 
 
@@ -174,33 +189,57 @@ Keep your response focused on what's relevant to e-commerce profitability.""",
 }
 
 
-def create_ecommerce_agent():
-    """Create and configure the deep agent for e-commerce analysis."""
-    return create_deep_agent(
-        model=coordinator_model,
-        tools=[],  # Coordinator delegates to subagents, doesn't use tools directly
-        system_prompt=get_coordinator_system_prompt(),
-        subagents=[
-            sql_expert_subagent,
-            data_analyst_subagent,
-            web_researcher_subagent,
-        ],
+def create_ecommerce_agent(enable_a2a: bool = False) -> tuple:
+    """Create and configure the deep agent for e-commerce analysis.
+
+    Args:
+        enable_a2a: If True, register the a2a_call tool so the coordinator
+            can communicate with remote A2A-compatible agents.
+
+    Returns:
+        Tuple of (agent, a2a_tool) where a2a_tool is the A2AClientTool
+        if enable_a2a is True, otherwise None.
+    """
+    a2a_tool = None
+    coordinator_tools: list = []
+
+    if enable_a2a:
+        from a2a_bridge.client_tool import create_a2a_call_tool
+
+        a2a_tool = create_a2a_call_tool()
+        coordinator_tools.append(a2a_tool)
+
+    return (
+        create_deep_agent(
+            model=coordinator_model,
+            tools=coordinator_tools,
+            system_prompt=get_coordinator_system_prompt(enable_a2a=enable_a2a),
+            subagents=[
+                sql_expert_subagent,
+                data_analyst_subagent,
+                web_researcher_subagent,
+            ],
+        ),
+        a2a_tool,
     )
 
 
 async def main():
     """Main entry point for the deep agents runner."""
+    enable_a2a = os.getenv("ENABLE_A2A", "false").lower() in ("true", "1", "yes")
+
     console.print(
         Panel.fit(
             "[bold magenta]🏪 E-commerce Data Analysis Helper (DeepAgents)[/bold magenta]\n"
             "[dim]Specialized multi-agent system for profitability analysis[/dim]\n"
-            "[dim cyan]Powered by deepagents framework[/dim cyan]",
+            "[dim cyan]Powered by deepagents framework[/dim cyan]"
+            + ("\n[dim green]A2A protocol: enabled[/dim green]" if enable_a2a else ""),
             border_style="magenta",
         )
     )
 
     # Create the agent
-    agent = create_ecommerce_agent()
+    agent, _ = create_ecommerce_agent(enable_a2a=enable_a2a)
 
     # Initialize conversation state
     state = {"messages": []}
