@@ -12,3 +12,6 @@ wheels/
 csv-data/
 *.db
 .cursorrules
+
+# DeepAgents scratch directory
+.deepagents/
